@@ -5,21 +5,15 @@
 #include <iostream>
 #include <algorithm> // std::sort
 #include <vector>    // std::vector
-#include <algorithm>
 #include <math.h>
 #include <iterator>
 #include <unistd.h>
-#include <cstdlib>
 #include <omp.h>
-#include <cstdio>
+#include <random>
+#include <climits>
 #define N 33'554'432 // 2^25
 #define NUM_PER_THREAD 65536
 #define NUM_PER_SORTED 16384
-// #define N 8388608
-// #define NUM_PER_THREAD 256
-// #define NUM_PER_SORTED 64
-// #define N 2048
-// #define NUM_PER_THREAD 512
 using namespace std;
 
 //Globals
@@ -209,20 +203,29 @@ void merge_blocks(int *a, int *output, int mergeBlockSize, int indexStart)
         C1in, C1out, C2in, C2out, D1in, D1out, D2in, D2out;
     int currentBlockSize = mergeBlockSize / 2;
     int numRuns = (mergeBlockSize / 16) - 1 - 2;
-    int AIndex1 = 16 + (mergeBlockSize * 0), AIndex2 = currentBlockSize + 16 + (mergeBlockSize * 0);
-    int BIndex1 = 16 + (mergeBlockSize * 1), BIndex2 = currentBlockSize + 16 + (mergeBlockSize * 1);
-    int CIndex1 = 16 + (mergeBlockSize * 2), CIndex2 = currentBlockSize + 16 + (mergeBlockSize * 2);
-    int DIndex1 = 16 + (mergeBlockSize * 3), DIndex2 = currentBlockSize + 16 + (mergeBlockSize * 3);
+    int AIndex1 = (currentBlockSize * 0), AIndex2 = (currentBlockSize * 1);
+    int BIndex1 = (currentBlockSize * 2), BIndex2 = (currentBlockSize * 3);
+    int CIndex1 = (currentBlockSize * 4), CIndex2 = (currentBlockSize * 5);
+    int DIndex1 = (currentBlockSize * 6), DIndex2 = (currentBlockSize * 7);
 
     //first 16
-    A1in = _mm512_load_epi32(a + indexStart + (mergeBlockSize * 0));
-    A2in = _mm512_load_epi32(a + indexStart + currentBlockSize + (mergeBlockSize * 0));
-    B1in = _mm512_load_epi32(a + indexStart + (mergeBlockSize * 1));
-    B2in = _mm512_load_epi32(a + indexStart + currentBlockSize + (mergeBlockSize * 1));
-    C1in = _mm512_load_epi32(a + indexStart + (mergeBlockSize * 2));
-    C2in = _mm512_load_epi32(a + indexStart + currentBlockSize + (mergeBlockSize * 2));
-    D1in = _mm512_load_epi32(a + indexStart + (mergeBlockSize * 3));
-    D2in = _mm512_load_epi32(a + indexStart + currentBlockSize + (mergeBlockSize * 3));
+    A1in = _mm512_load_epi32(a + indexStart + AIndex1);
+    A2in = _mm512_load_epi32(a + indexStart + AIndex2);
+    B1in = _mm512_load_epi32(a + indexStart + BIndex1);
+    B2in = _mm512_load_epi32(a + indexStart + BIndex2);
+    C1in = _mm512_load_epi32(a + indexStart + CIndex1);
+    C2in = _mm512_load_epi32(a + indexStart + CIndex2);
+    D1in = _mm512_load_epi32(a + indexStart + DIndex1);
+    D2in = _mm512_load_epi32(a + indexStart + DIndex2);
+    AIndex1 += 16;
+    AIndex2 += 16;
+    BIndex1 += 16;
+    BIndex2 += 16;
+    CIndex1 += 16;
+    CIndex2 += 16;
+    DIndex1 += 16;
+    DIndex2 += 16;
+
     bitonic_sort(A1in, A2in, B1in, B2in, C1in, C2in, D1in, D2in,
                  A1out, A2out, B1out, B2out, C1out, C2out, D1out, D2out);
     _mm512_store_si512(output + indexStart + (mergeBlockSize * 0), A1out);
@@ -386,26 +389,30 @@ void merge_blocks(int *a, int *output, int mergeBlockSize, int indexStart)
 
 int main(int argc, char *argv[])
 {
+
+    std::random_device rd; //Will be used to obtain a seed for the random number engine
+    //std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
+    std::mt19937 gen(0); //Standard mersenne_twister_engine seeded with rd()
+    std::uniform_int_distribution<int> distrib(0, INT_MAX);
     //----------------------Initialize Array to be sorted----------------------
     int *a = (int *)aligned_alloc(64, sizeof(int) * ARRAY_LENGTH);
     for (int i = 0; i < ARRAY_LENGTH; i++) //Populates the array with random values
     {
-        a[i] = (rand() % (100));
+        a[i] = distrib(gen);
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
 #pragma omp parallel for schedule(dynamic) num_threads(64)
     for (unsigned int i = 0; i < N; i += NUM_PER_THREAD)
     {
-        int *threadOutput = (int *)aligned_alloc(64, sizeof(int) * NUM_PER_THREAD);
         int endIndex = i + NUM_PER_THREAD;
-        printf("Thread %d is ready to work within range [%d, %d).\n", omp_get_thread_num(), i, endIndex);
+        //printf("Thread %d is ready to work within range [%d, %d).\n", omp_get_thread_num(), i, endIndex);
         //----------------------Sort into 16----------------------
         for (int j = i / 16; j < endIndex / 16; j++)
         {
             if (i == 0)
             {
-                printf("On first for loop\n");
+                //printf("On first for loop\n");
             }
             sort(a + (j * 16), a + 16 + (j * 16)); //sort each 16
         }
@@ -415,7 +422,7 @@ int main(int argc, char *argv[])
         {
             if (i == 0)
             {
-                printf("On second for loop\n");
+                //printf("On second for loop\n");
             }
             sort_32(a, j);
         }
@@ -424,16 +431,14 @@ int main(int argc, char *argv[])
         // int numMerges = (log(NUM_PER_THREAD) / log(2)) - 2;
         int numMerges = log(NUM_PER_SORTED) / log(2);
         int *threadInput = a + i;
-        for (int curMerges = 5; curMerges <= numMerges; curMerges++) //merge into larger sorted blocks
+        int *threadOutput = (int *)aligned_alloc(64, sizeof(int) * NUM_PER_THREAD);
+        int *origOutput = threadOutput;
+        for (int blockSize = 64; blockSize <= NUM_PER_SORTED; blockSize *= 2) //merge into larger sorted blocks
         {
-            int blockSize = pow(2, curMerges);
             // cout << blockSize;
+            //printf("blocksize %d\n", blockSize);
             for (int j = 0; j < NUM_PER_THREAD; j += (blockSize * 4))
             {
-                if (i == 0)
-                {
-                    printf("On merge %d, range is %d,%d, j is %d\n", curMerges, i, endIndex, j);
-                }
                 if ((blockSize * 4) <= NUM_PER_THREAD)
                 {
                     merge_blocks(threadInput, threadOutput, blockSize, j);
@@ -447,33 +452,36 @@ int main(int argc, char *argv[])
         {
             a[j + i] = threadInput[j];
         }
-
-        delete threadOutput;
+        delete origOutput;
     }
 
     auto t2 = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> fp_ms = t2 - t1;
     printf("It took %g milliseconds\n", fp_ms.count());
+    // for (int i = 0; i < 10; i++)
+    // {
+    //     printf("%d ", a[i]);
+    // }
+    // printf("\n");
 
     // printArray(a, ARRAY_LENGTH, "output");
 
     // ----------------------Check if Sorted----------------------
-    for (int j = 0; j < N; j += NUM_PER_SORTED)
+    int numPerSorted = NUM_PER_SORTED;
+    for (int j = 0; j < N; j += numPerSorted)
     {
-        for (int k = j; k < j + NUM_PER_SORTED; k++)
+        for (int k = j + 1; k < j + numPerSorted; k++)
         {
-            if (k % NUM_PER_SORTED != 0)
+            if (a[k] < a[k - 1])
             {
-                if (a[k] < a[k - 1])
-                {
-                    cout << "Not Sorted @ index: " << k << endl;
-                    cout << k - 1 << " = " << a[k - 1] << endl;
-                    cout << k << " = " << a[k] << endl;
-                    cout << k + 1 << " = " << a[k + 1] << endl;
-                    return 1;
-                }
+                cout << "Not Sorted @ index: " << k << endl;
+                cout << k - 1 << " = " << a[k - 1] << endl;
+                cout << k << " = " << a[k] << endl;
+                cout << k + 1 << " = " << a[k + 1] << endl;
+                return 1;
             }
         }
+        // printf("Block %d sorted\n", j);
     }
 
     // //----------------------debug----------------------
